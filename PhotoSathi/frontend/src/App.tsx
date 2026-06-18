@@ -7,10 +7,9 @@ import LRControls from './components/LRControls'
 import LRFilmstrip from './components/LRFilmstrip'
 import LRStats from './components/LRStats'
 import ExportDialog from './components/ExportDialog'
-import ResumeDialog from './components/ResumeDialog'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useSession } from './hooks/useSession'
-import { performAction, undoAction, loadFolder, saveSession } from './services/api'
+import { setFiles, ensureThumbnail } from './utils/fileStore'
 import type { Categories, Action, PhotoStats } from './types'
 
 const SAVE_INTERVAL = 10000
@@ -24,7 +23,6 @@ function getCategory(filename: string, categories: Categories): string | null {
 }
 
 export default function App() {
-  const [folderPath, setFolderPath] = useState('')
   const [folderName, setFolderName] = useState('')
   const [allImages, setAllImages] = useState<string[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -37,14 +35,13 @@ export default function App() {
   const [imageLoaded, setImageLoaded] = useState(false)
   const [transitioning, setTransitioning] = useState(false)
   const [showExport, setShowExport] = useState(false)
-  const [showResume, setShowResume] = useState(false)
   const [showStats, setShowStats] = useState(false)
   const [started, setStarted] = useState(false)
 
   const touchStartX = useRef(0)
   const touchStartY = useRef(0)
 
-  const { savedSession, saveToLocal, clearLocal } = useSession()
+  const { saveToLocal } = useSession()
 
   const currentFile = allImages[currentIndex] || null
   const currentCategory = currentFile ? getCategory(currentFile, categories) : null
@@ -66,72 +63,73 @@ export default function App() {
     }, 80)
   }, [allImages, fixIndex])
 
-  const handleAction = useCallback(async (action: 'keep' | 'reject' | 'favorite') => {
+  const handleAction = useCallback((action: 'keep' | 'reject' | 'favorite') => {
     if (!currentFile) return
-    try {
-      const res = await performAction(currentFile, action)
-      if (!res.ok) return
-      const data = await res.json()
-      setStats(data)
 
-      setCategories(prev => {
-        const next = { ...prev }
-        ;(['keep', 'reject', 'favorites'] as const).forEach(c => {
-          next[c] = prev[c].filter(f => f !== currentFile)
-        })
-        const map = { keep: 'keep' as const, reject: 'reject' as const, favorite: 'favorites' as const }
-        next[map[action]] = [...prev[map[action]], currentFile]
-        return next
+    setCategories(prev => {
+      const next = { ...prev }
+      ;(['keep', 'reject', 'favorites'] as const).forEach(c => {
+        next[c] = prev[c].filter(f => f !== currentFile)
       })
+      const map = { keep: 'keep' as const, reject: 'reject' as const, favorite: 'favorites' as const }
+      next[map[action]] = [...prev[map[action]], currentFile]
+      return next
+    })
 
-      setActions(prev => [...prev, { filename: currentFile, action }])
-      navigate(1)
-    } catch {}
+    setActions(prev => [...prev, { filename: currentFile, action }])
+    setStats(prev => ({
+      ...prev,
+      keep: prev.keep + (action === 'keep' ? 1 : 0),
+      reject: prev.reject + (action === 'reject' ? 1 : 0),
+      favorites: prev.favorites + (action === 'favorite' ? 1 : 0),
+      remaining: prev.remaining - 1,
+    }))
+    navigate(1)
   }, [currentFile, navigate])
 
-  const handleUndo = useCallback(async () => {
+  const handleUndo = useCallback(() => {
     if (!actions.length) return
-    try {
-      const res = await undoAction()
-      if (!res.ok) return
-      const data = await res.json()
-      setStats(data.stats)
-      setActions(prev => prev.slice(0, -1))
 
-      const undone = data.undone as Action
-      setCategories(prev => {
-        const next = { ...prev }
-        const map = { keep: 'keep' as const, reject: 'reject' as const, favorite: 'favorites' as const }
-        const cat = map[undone.action]
-        next[cat] = prev[cat].filter(f => f !== undone.filename)
-        return next
-      })
+    const last = actions[actions.length - 1]
+    setActions(prev => prev.slice(0, -1))
 
-      const idx = allImages.indexOf(undone.filename)
-      if (idx >= 0) {
-        setCurrentIndex(idx)
-        setImageLoaded(false)
-      }
-    } catch {}
+    setCategories(prev => {
+      const next = { ...prev }
+      const map = { keep: 'keep' as const, reject: 'reject' as const, favorite: 'favorites' as const }
+      const cat = map[last.action]
+      next[cat] = prev[cat].filter(f => f !== last.filename)
+      return next
+    })
+
+    setStats(prev => ({
+      ...prev,
+      keep: prev.keep - (last.action === 'keep' ? 1 : 0),
+      reject: prev.reject - (last.action === 'reject' ? 1 : 0),
+      favorites: prev.favorites - (last.action === 'favorite' ? 1 : 0),
+      remaining: prev.remaining + 1,
+    }))
+
+    const idx = allImages.indexOf(last.filename)
+    if (idx >= 0) {
+      setCurrentIndex(idx)
+      setImageLoaded(false)
+    }
   }, [actions, allImages])
 
-  const handleStart = useCallback(async (path: string, name: string) => {
-    if (!path) return
-    try {
-      const res = await loadFolder(path)
-      const data = await res.json()
-      if (data.error) return
-      setFolderPath(path)
-      setFolderName(name || data.folder_name)
-      setAllImages(data.images)
-      setCurrentIndex(0)
-      setCategories({ keep: [], reject: [], favorites: [] })
-      setActions([])
-      setZoomLevel(1)
-      setImageLoaded(false)
-      setStats({ total: data.total, keep: 0, reject: 0, favorites: 0, remaining: data.total })
-      setStarted(true)
-    } catch {}
+  const handleStart = useCallback((files: File[], name: string) => {
+    setFiles(files)
+    const names = files.map(f => f.name)
+    setFolderName(name)
+    setAllImages(names)
+    setCurrentIndex(0)
+    setCategories({ keep: [], reject: [], favorites: [] })
+    setActions([])
+    setZoomLevel(1)
+    setImageLoaded(false)
+    setStats({ total: names.length, keep: 0, reject: 0, favorites: 0, remaining: names.length })
+    setStarted(true)
+
+    names.forEach(n => ensureThumbnail(n))
   }, [])
 
   const toggleFullscreen = async () => {
@@ -182,12 +180,10 @@ export default function App() {
 
   useEffect(() => {
     if (!started) return
-    const interval = setInterval(async () => {
-      if (!folderPath || !allImages.length) return
-      const session = { folderPath, actions, timestamp: new Date().toISOString() }
-      await saveSession(session).catch(() => {})
+    const interval = setInterval(() => {
+      if (!allImages.length) return
       saveToLocal({
-        folderPath,
+        folderPath: '',
         folderName,
         images: allImages,
         actions,
@@ -197,53 +193,11 @@ export default function App() {
       })
     }, SAVE_INTERVAL)
     return () => clearInterval(interval)
-  }, [started, folderPath, folderName, allImages, actions, categories, stats, saveToLocal])
-
-  useEffect(() => {
-    if (savedSession && savedSession.actions.length > 0 && !started) {
-      setShowResume(true)
-    }
-  }, [savedSession, started])
-
-  const handleResume = async () => {
-    if (!savedSession) return
-    try {
-      const res = await loadFolder(savedSession.folderPath || '')
-      const data = await res.json()
-      if (data.error) return
-      setFolderPath(data.folder_path)
-      setFolderName(data.folder_name)
-      setAllImages(data.images)
-
-      const cats: Categories = { keep: [], reject: [], favorites: [] }
-      for (const a of savedSession.actions) {
-        const map = { keep: 'keep' as const, reject: 'reject' as const, favorite: 'favorites' as const }
-        const cat = map[a.action]
-        if (!cats[cat].includes(a.filename)) cats[cat].push(a.filename)
-      }
-      setCategories(cats)
-      setActions(savedSession.actions)
-      setStats(savedSession.stats)
-      setCurrentIndex(0)
-      setStarted(true)
-      setShowResume(false)
-    } catch {}
-  }
-
-  const handleNew = () => {
-    clearLocal()
-    setShowResume(false)
-    fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) }).catch(() => {})
-  }
+  }, [started, folderName, allImages, actions, categories, stats, saveToLocal])
 
   if (!started) {
     return (
-      <>
-        {showResume && savedSession && (
-          <ResumeDialog session={savedSession} onResume={handleResume} onNew={handleNew} />
-        )}
-        <LandingPage onStart={handleStart} />
-      </>
+      <LandingPage onStart={handleStart} />
     )
   }
 
@@ -253,7 +207,7 @@ export default function App() {
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
-      {showExport && <ExportDialog stats={stats} onClose={() => setShowExport(false)} />}
+      {showExport && <ExportDialog allImages={allImages} categories={categories} stats={stats} onClose={() => setShowExport(false)} />}
 
       <div className="lr-layout">
         <LRSidebar

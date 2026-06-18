@@ -1,57 +1,84 @@
 import { useState } from 'react'
 import type { PhotoStats } from '../types'
-import { exportPhotos, exportToFolder } from '../services/api'
+import { getFilesByCategory, getFile } from '../utils/fileStore'
 
 interface Props {
+  allImages: string[]
+  categories: { keep: string[]; reject: string[]; favorites: string[] }
   stats: PhotoStats
   onClose: () => void
 }
 
-export default function ExportDialog({ stats, onClose }: Props) {
+export default function ExportDialog({ allImages, categories, stats, onClose }: Props) {
   const [exporting, setExporting] = useState(false)
   const [result, setResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [destination, setDestination] = useState('')
-  const [mode, setMode] = useState<'zip' | 'folder' | null>(null)
 
   const total = stats.keep + stats.reject + stats.favorites
   const canExport = total > 0
 
-  const handleZipExport = async () => {
-    setMode('zip')
+  const handleFolderExport = async () => {
+    if (!('showDirectoryPicker' in window)) {
+      setError('Your browser does not support saving to folders. Use Chrome or Edge.')
+      return
+    }
     setExporting(true)
     setError(null)
     try {
-      const res = await exportPhotos()
-      const data = await res.json()
-      if (data.error) setError(data.error)
-      else {
-        setResult(data.message || 'Export completed')
-        setTimeout(() => {
-          window.open('/api/export/download', '_blank')
-        }, 300)
+      const rootHandle = await (window as any).showDirectoryPicker({ mode: 'readwrite' })
+      const catMap = getFilesByCategory(allImages, categories)
+
+      let count = 0
+      for (const [cat, label] of [['keep', 'Keep'], ['reject', 'Reject'], ['favorites', 'Favorites']] as const) {
+        const files = catMap[cat]
+        if (!files.length) continue
+        const dir = await rootHandle.getDirectoryHandle(label, { create: true })
+        for (const file of files) {
+          const handle = await dir.getFileHandle(file.name, { create: true })
+          const writable = await handle.createWritable()
+          await writable.write(file)
+          await writable.close()
+          count++
+        }
       }
-    } catch {
-      setError('Export failed. Is the server running?')
+
+      setResult(`Saved ${count} photos to the selected folder`)
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || err?.message?.includes('aborted')) {
+        setError(null)
+      } else {
+        setError(err?.message || 'Export failed')
+      }
     }
     setExporting(false)
   }
 
-  const handleFolderExport = async () => {
-    if (!destination.trim()) {
-      setError('Please enter a destination folder path')
-      return
-    }
-    setMode('folder')
+  const handleZipExport = async () => {
+    const JSZip = (await import('jszip')).default
     setExporting(true)
     setError(null)
     try {
-      const res = await exportToFolder(destination.trim())
-      const data = await res.json()
-      if (data.error) setError(data.error)
-      else setResult(data.message)
+      const zip = new JSZip()
+      const catMap = getFilesByCategory(allImages, categories)
+
+      for (const [cat, label] of [['keep', 'Keep'], ['reject', 'Reject'], ['favorites', 'Favorites']] as const) {
+        const files = catMap[cat]
+        for (const file of files) {
+          const buffer = await file.arrayBuffer()
+          zip.file(`${label}/${file.name}`, buffer)
+        }
+      }
+
+      const blob = await zip.generateAsync({ type: 'blob' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = 'photosathi-export.zip'
+      a.click()
+      URL.revokeObjectURL(url)
+      setResult('ZIP downloaded successfully')
     } catch {
-      setError('Export failed. Is the server running?')
+      setError('Failed to create ZIP')
     }
     setExporting(false)
   }
@@ -82,45 +109,34 @@ export default function ExportDialog({ stats, onClose }: Props) {
           </div>
         )}
 
+        {/* Save to Folder */}
+        <button
+          onClick={handleFolderExport}
+          disabled={exporting || !canExport}
+          className="btn-primary w-full py-3 text-sm font-medium rounded-xl mb-3 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {exporting ? (
+            <span className="flex items-center justify-center gap-2">
+              <span className="spinner-small" />
+              Saving...
+            </span>
+          ) : '📁 Save to Folder'}
+        </button>
+        <p className="text-xs text-gray-600 text-center mb-4 -mt-2">Pick where to save Keep / Reject / Favorites folders</p>
+
         {/* ZIP export */}
         <button
           onClick={handleZipExport}
           disabled={exporting || !canExport}
-          className="btn-primary w-full py-3 text-sm font-medium rounded-xl mb-3 disabled:opacity-40 disabled:cursor-not-allowed"
+          className="btn-secondary w-full py-3 text-sm font-medium rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {exporting && mode === 'zip' ? (
+          {exporting ? (
             <span className="flex items-center justify-center gap-2">
               <span className="spinner-small" />
-              Exporting ZIP...
+              Creating ZIP...
             </span>
           ) : '📦 Download ZIP'}
         </button>
-
-        {/* Folder export */}
-        <div className="border-t border-white/[.06] pt-4 mt-1">
-          <p className="text-xs text-gray-600 mb-3">
-            Or copy organized photos directly to a folder on your computer:
-          </p>
-          <input
-            type="text"
-            value={destination}
-            onChange={e => setDestination(e.target.value)}
-            placeholder="e.g. D:\Wedding\Organized"
-            className="w-full px-4 py-2.5 rounded-xl bg-white/[.04] border border-white/[.08] text-sm text-white placeholder-gray-600 outline-none focus:border-[#3B82F6]/40 transition-colors mb-3"
-          />
-          <button
-            onClick={handleFolderExport}
-            disabled={exporting || !canExport || !destination.trim()}
-            className="btn-secondary w-full py-2.5 text-sm rounded-xl disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {exporting && mode === 'folder' ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="spinner-small" />
-                Exporting...
-              </span>
-            ) : '📁 Export to Folder'}
-          </button>
-        </div>
 
         {!result && (
           <button onClick={onClose} className="w-full text-center text-xs text-gray-600 hover:text-gray-400 mt-4 transition-colors">

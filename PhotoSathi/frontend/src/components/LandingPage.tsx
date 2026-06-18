@@ -1,9 +1,8 @@
 import { useRef, useCallback, useState, useEffect } from 'react'
 import { motion, useInView, AnimatePresence } from 'framer-motion'
-import { loadFolder, resolveFolder, uploadFile, getUploadedImages } from '../services/api'
 
 interface Props {
-  onStart: (path: string, name: string) => void
+  onStart: (files: File[], folderName: string) => void
 }
 
 const easeOutQuint: [number,number,number,number] = [.16,1,.3,1]
@@ -81,10 +80,7 @@ function FAQItem({ question, answer, open, onToggle }: { question: string; answe
 }
 
 /* ── Start Modal ── */
-function StartModal({ onClose, onFolderPick, onPathLoad, initialPath = '' }: { onClose: () => void; onFolderPick: () => void; onPathLoad: (path: string) => void; initialPath?: string }) {
-  const [mode, setMode] = useState<'pick' | 'path' | null>(initialPath ? 'path' : null)
-  const [path, setPath] = useState(initialPath)
-
+function StartModal({ onClose, onFolderPick }: { onClose: () => void; onFolderPick: () => void }) {
   return (
     <motion.div
       className="fixed inset-0 z-[200] flex items-center justify-center"
@@ -102,64 +98,18 @@ function StartModal({ onClose, onFolderPick, onPathLoad, initialPath = '' }: { o
         exit={{ opacity: 0, scale: .95, y: 20 }}
         transition={{ duration: .35, ease: easeOutQuint }}
       >
-        {!mode && (
-          <>
-            <div className="text-3xl mb-4">📸</div>
-            <h2 className="text-lg font-semibold mb-2">Open your photos</h2>
-            <p className="text-sm text-gray-500 mb-6">Choose how you want to load your photos.</p>
-            <div className="flex flex-col gap-3">
-              <motion.button
-                onClick={() => { setMode('pick'); onFolderPick() }}
-                className="btn-primary w-full py-3 text-sm font-medium rounded-xl"
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: .97 }}
-              >
-                📁 Upload from folder
-              </motion.button>
-              <motion.button
-                onClick={() => setMode('path')}
-                className="btn-secondary w-full py-3 text-sm font-medium rounded-xl"
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: .97 }}
-              >
-                ⌨️ Enter folder path <span className="text-[10px] opacity-60">(local only)</span>
-              </motion.button>
-            </div>
-            <button onClick={onClose} className="text-xs text-gray-600 hover:text-gray-400 mt-5 transition-colors">Cancel</button>
-          </>
-        )}
-
-        {mode === 'path' && (
-          <>
-            <div className="text-3xl mb-4">⌨️</div>
-            <h2 className="text-lg font-semibold mb-2">Enter folder path</h2>
-            <p className="text-sm text-gray-500 mb-4">
-              {initialPath
-                ? `Detected folder "${initialPath}". Add the full path (e.g. D:\${initialPath})`
-                : 'Paste the full path to your photos folder. Only works when the server can access the filesystem.'}
-            </p>
-            <input
-              type="text"
-              value={path}
-              onChange={e => setPath(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && path.trim()) onPathLoad(path.trim()) }}
-              placeholder={initialPath ? `D:\\${initialPath}` : "D:\\Wedding\\Photos"}
-              className="w-full px-4 py-3 rounded-xl bg-white/[.04] border border-white/[.08] text-sm text-white placeholder-gray-600 outline-none focus:border-[#3B82F6]/40 transition-colors mb-4"
-              autoFocus
-            />
-            <motion.button
-              onClick={() => { if (path.trim()) onPathLoad(path.trim()) }}
-              className="btn-primary w-full py-3 text-sm font-medium rounded-xl"
-              whileHover={{ scale: 1.03 }}
-              whileTap={{ scale: .97 }}
-              disabled={!path.trim()}
-              style={!path.trim() ? { opacity: .4, cursor: 'not-allowed' } : {}}
-            >
-              Load Folder
-            </motion.button>
-            <button onClick={() => setMode(null)} className="text-xs text-gray-600 hover:text-gray-400 mt-4 transition-colors">Back</button>
-          </>
-        )}
+        <div className="text-3xl mb-4">📸</div>
+        <h2 className="text-lg font-semibold mb-2">Open your photos</h2>
+        <p className="text-sm text-gray-500 mb-6">Select a folder of wedding photos to get started. Everything stays on your device.</p>
+        <motion.button
+          onClick={() => { onFolderPick() }}
+          className="btn-primary w-full py-3 text-sm font-medium rounded-xl"
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: .97 }}
+        >
+          📁 Select a folder
+        </motion.button>
+        <button onClick={onClose} className="text-xs text-gray-600 hover:text-gray-400 mt-5 transition-colors">Cancel</button>
       </motion.div>
     </motion.div>
   )
@@ -189,12 +139,8 @@ export default function LandingPage({ onStart }: Props) {
   const folderInputRef = useRef<HTMLInputElement>(null)
   const [faqOpen, setFaqOpen] = useState<number | null>(null)
   const heroRef = useRef<HTMLDivElement>(null)
-  const [loading, setLoading] = useState(false)
-  const [loadingMessage, setLoadingMessage] = useState('')
-  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
   const [error, setError] = useState('')
   const [showStartModal, setShowStartModal] = useState(false)
-  const [detectedFolder, setDetectedFolder] = useState('')
 
   useEffect(() => {
     document.body.style.overflow = 'auto'
@@ -204,98 +150,21 @@ export default function LandingPage({ onStart }: Props) {
 
   const handleFolderPick = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     setError('')
-    setUploadProgress({ done: 0, total: 0 })
+    setShowStartModal(false)
     const files = e.target.files
     if (!files?.length) return
-
-    const allFiles = Array.from(files)
-    const validFiles = allFiles.filter(f => {
+    const valid = Array.from(files).filter(f => {
       const ext = '.' + f.name.split('.').pop()?.toLowerCase()
       return ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'].includes(ext)
     })
-    if (!validFiles.length) {
-      setError('No supported image files found in this folder')
+    if (!valid.length) {
+      setError('No supported image files found')
       if (folderInputRef.current) folderInputRef.current.value = ''
       return
     }
-
-    const folderName = allFiles[0].webkitRelativePath?.split('/')[0]
-    if (folderName) {
-      setLoading(true)
-      setLoadingMessage('Looking for folder...')
-      try {
-        const res = await resolveFolder(folderName)
-        const data = await res.json()
-        if (data.found && data.matches.length === 1) {
-          const fullPath = data.matches[0]
-          setLoadingMessage('Loading folder...')
-          const r2 = await loadFolder(fullPath)
-          const d2 = await r2.json()
-          setLoading(false)
-          if (d2.error) { setError(d2.error); return }
-          onStart(fullPath, d2.folder_name || folderName)
-          return
-        }
-      } catch {}
-    }
-
-    setLoading(true)
-    setUploadProgress({ done: 0, total: validFiles.length })
-    let uploaded = 0
-    let hasError = false
-    for (let i = 0; i < validFiles.length; i++) {
-      try {
-        await uploadFile(validFiles[i])
-        uploaded++
-        setUploadProgress({ done: uploaded, total: validFiles.length })
-      } catch {
-        hasError = true
-      }
-    }
-
-    if (!uploaded) {
-      setError('Upload failed. Check server connection.')
-      setLoading(false)
-      setUploadProgress({ done: 0, total: 0 })
-      if (folderInputRef.current) folderInputRef.current.value = ''
-      return
-    }
-
-    setLoadingMessage('Loading images...')
-    try {
-      const r2 = await getUploadedImages()
-      const d2 = await r2.json()
-      if (d2.images?.length) {
-        setLoading(false)
-        setUploadProgress({ done: 0, total: 0 })
-        onStart(d2.folder_path, d2.folder_name)
-        return
-      }
-    } catch {}
-    setError(hasError ? 'Some files failed to upload. Try again.' : 'Upload failed. Check server connection.')
-    setLoading(false)
-    setUploadProgress({ done: 0, total: 0 })
+    const folderName = valid[0].webkitRelativePath?.split('/')[0] || 'Photos'
+    onStart(valid, folderName)
     if (folderInputRef.current) folderInputRef.current.value = ''
-  }, [onStart])
-
-  const handleFolderPathLoad = useCallback(async (path: string) => {
-    setError('')
-    setShowStartModal(false)
-    setLoading(true)
-    setLoadingMessage('Loading folder...')
-    try {
-      const res = await loadFolder(path)
-      const data = await res.json()
-      if (data.error) {
-        setError(data.error)
-        setLoading(false)
-        return
-      }
-      onStart(path, data.folder_name || path.split('\\').pop() || path.split('/').pop() || 'Folder')
-    } catch {
-      setError('Failed to load folder. Make sure the path exists and the server can access it.')
-      setLoading(false)
-    }
   }, [onStart])
 
   const stars = Array.from({ length: 50 }, (_, i) => ({
@@ -309,34 +178,6 @@ export default function LandingPage({ onStart }: Props) {
 
   return (
     <div className="min-h-screen bg-[#0B0B0B] relative" style={{ overflowY: 'auto', overflowX: 'hidden' }}>
-      {/* Loading overlay */}
-      <AnimatePresence>
-        {loading && (
-          <motion.div
-            className="fixed inset-0 z-[200] flex items-center justify-center"
-            style={{ background: 'rgba(0,0,0,.8)', backdropFilter: 'blur(12px)' }}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
-            <div className="flex flex-col items-center gap-5">
-              <div className="w-10 h-10 border-2 border-[#3B82F6] border-t-transparent rounded-full animate-spin" />
-              <p className="text-sm text-gray-400">{loadingMessage || 'Loading...'}</p>
-              {uploadProgress.total > 0 && (
-                <div className="flex flex-col items-center gap-2 w-64">
-                  <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-[#3B82F6] rounded-full transition-all duration-300"
-                      style={{ width: `${(uploadProgress.done / uploadProgress.total) * 100}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-gray-500">{uploadProgress.done} of {uploadProgress.total} photos</p>
-                </div>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
 
       {/* Navbar */}
       <motion.nav className="navbar" initial={{ y: -20, opacity: 0 }} animate={{ y: 0, opacity: 1 }} transition={{ duration: .4, ease: easeOutQuint }}>
@@ -347,7 +188,7 @@ export default function LandingPage({ onStart }: Props) {
           </motion.div>
           <div className="flex items-center gap-3">
             <motion.button
-              onClick={() => folderInputRef.current?.click()}
+              onClick={() => setShowStartModal(true)}
               className="px-5 py-2 text-sm font-medium rounded-xl bg-[#3B82F6] text-black hover:bg-[#3B82F6]/90 transition-all duration-200"
               whileHover={{ scale: 1.04 }}
               whileTap={{ scale: .96 }}
@@ -364,11 +205,8 @@ export default function LandingPage({ onStart }: Props) {
       <AnimatePresence>
         {showStartModal && (
           <StartModal
-            key={detectedFolder || 'default'}
-            onClose={() => { setShowStartModal(false); setDetectedFolder('') }}
+            onClose={() => setShowStartModal(false)}
             onFolderPick={() => folderInputRef.current?.click()}
-            onPathLoad={(path) => { setShowStartModal(false); setDetectedFolder(''); handleFolderPathLoad(path) }}
-            initialPath={detectedFolder}
           />
         )}
       </AnimatePresence>
@@ -654,7 +492,7 @@ export default function LandingPage({ onStart }: Props) {
           <h2 className="text-3xl md:text-4xl font-bold mb-4">Ready to organize?</h2>
           <p className="text-gray-500 text-sm md:text-base mb-8 max-w-md mx-auto">No sign-up required. Just pick a folder and go.</p>
           <motion.button
-            onClick={() => folderInputRef.current?.click()}
+            onClick={() => setShowStartModal(true)}
             className="btn-primary-saas"
             whileHover={{ scale: 1.04 }}
             whileTap={{ scale: .97 }}
