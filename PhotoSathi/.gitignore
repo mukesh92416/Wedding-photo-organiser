@@ -1,0 +1,9 @@
+node_modules/
+dist/
+backend/uploads/
+backend/exports/
+backend/session.json
+*.thumb
+.env
+*.pyc
+__pycache__/
